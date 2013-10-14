@@ -1,21 +1,50 @@
 #!/usr/bin/ruby
 # Alexandre Pierret
 require 'find'
-require 'zlib'
+require 'zlib' #for CRC
 require 'sqlite3'
 require 'time'
+require 'optparse' #options parsing
 
+
+# OptionParser Array
+$options = {}
+optparse = OptionParser.new do|opts|
+	# Top of the help screen
+	opts.banner = "Usage: aifc.rb [options] path1 path2 ..."
+	# Options
+	$options[:debug] = false
+	opts.on( '-d', '--debug', 'Output debug information' ) do
+		$options[:debug] = true
+	end
+	$options[:reset] = false
+	opts.on( '-r', '--reset', 'Reset database before scan' ) do
+		$options[:reset] = true
+	end
+	$options[:verbose] = false
+	opts.on( '-v', '--verbose', 'Verbose report' ) do
+		$options[:reset] = true
+	end
+	$options[:database] = "aifc.db"
+	opts.on( '-b', '--database FILE', 'Use specified database' ) do |file|
+		$options[:database] = file
+	end
+	# Displays the help screen
+	opts.on( '-h', '--help', 'Display this screen' ) do
+		puts opts
+		exit
+	end
+end
+optparse.parse!
 
 now = Time.new.to_i #used to set date as a seqence_id in SQLite database
 
 def putsDebug(msg)
-	puts msg
+	puts msg if $options[:debug]
 end
 
 def putsArrayDebug(array)
-	array.each do |line|
-		puts line.map { |field| field }.join(" ")
-	end
+	p array if $options[:debug]
 end
 
 # Return the CRC32 checksum of a file
@@ -24,7 +53,6 @@ def getFileCRC(filename)
 		openfile = File.open(filename, 'rb') do | openfile |
 			filecontent = openfile.read
 			filecrc = Zlib.crc32(filecontent,0).to_s(16).upcase
-			#puts "Filename : #{filename} | CRC #{filecrc}"
 			return filecrc
 		end
 	rescue
@@ -49,36 +77,50 @@ end
 
 #Main()
 newArray = Array.new #Initialize Array of new entry
-changeArray = Array.new #Initialize Array of changed entry
+changedArray = Array.new #Initialize Array of changed entry
+deletedArray = Array.new #Initialize Array of deleted entry
+filecount = 0 #Initialize file scan counter
 
 begin
-	db = SQLite3::Database.open "aifc.db" #Open or create SQLite database
+	db = SQLite3::Database.open $options[:database] #Open or create SQLite database
 	putsDebug "SQLite version: #{db.get_first_value('SELECT SQLITE_VERSION()')}" #Debug: print SQLite version
 	db.execute("CREATE TABLE IF NOT EXISTS files(filename TEXT, crc TEXT, time INTEGER)") #Create table if not already exist
+	db.execute("DELETE FROM files") if $options[:reset] #Truncate table if --reset option is specified
 
-	Find.find(ARGV[0]) do | filename | #Do a find from a path
-		if File::file?(filename) #If file found is a regular file
-		then
-			newFileCRC = getFileCRC(filename) #Get the local CRC
-			putsDebug("Regular local file found. Filename : #{filename} | CRC #{newFileCRC}") #Debug: print local file information
-			oldFileCRC = getDatabaseFileCRC(db, filename)
-			if oldFileCRC #Check if a CRC has been returned from DB
-			then #yes, it means file is already present in database
-				if newFileCRC == oldFileCRC
-				then #No change since last scan
-					putsDebug("No change since last time. Updating scanTime in database")
-					db.execute("UPDATE files SET time=#{now} WHERE filename='#{filename}'") #Update entry scanTime
-				else #File has changed since last time
-					putsDebug("Change since last time. Adding file to changeArray and updating CRC and scanTime in database")
-					changeArray.push([filename,oldFileCRC,newFileCRC]) #Add file to file change
-					db.execute("UPDATE files SET crc='#{newFileCRC}', time=#{now} WHERE filename='#{filename}'") #Update entry CRC and scanTime
+	ARGV.each do | path |
+		Find.find(path) do | filename | #Do a find from a path
+			if File::file?(filename) #If file found is a regular file
+			then
+				filecount+=1
+				newFileCRC = getFileCRC(filename) #Get the local CRC
+				putsDebug("Regular local file found. Filename : #{filename} | CRC #{newFileCRC}") #Debug: print local file information
+				oldFileCRC = getDatabaseFileCRC(db, filename)
+				if oldFileCRC #Check if a CRC has been returned from DB
+				then #yes, it means file is already present in database
+					if newFileCRC == oldFileCRC
+					then #No change since last scan
+						putsDebug("No change since last time. Updating scanTime in database")
+						db.execute("UPDATE files SET time=#{now} WHERE filename='#{filename}'") #Update entry scanTime
+					else #File has changed since last time
+						putsDebug("Change since last time. Adding file to changedArray and updating CRC and scanTime in database")
+						changedArray.push([filename,oldFileCRC,newFileCRC]) #Add file to file change
+						db.execute("UPDATE files SET crc='#{newFileCRC}', time=#{now} WHERE filename='#{filename}'") #Update entry CRC and scanTime
+					end
+				else #no, it's a new file
+					putsDebug("New file. Adding file to newArray and adding CRC and scanTime to database")
+					newArray.push([filename,newFileCRC])
+					db.execute("INSERT INTO files(filename, crc, time) VALUES ('#{filename}','#{newFileCRC}',#{now})") #Create entry
 				end
-			else #no, it's a new file
-				putsDebug("New file. Adding file to newArray and adding CRC and scanTime to database")
-				newArray.push([filename,newFileCRC])
-				db.execute("INSERT INTO files(filename, crc, time) VALUES ('#{filename}','#{newFileCRC}',#{now})") #Create entry
 			end
 		end
+	end
+	# DB Cleaning
+	if rsCleanedFile = db.execute("SELECT filename FROM files WHERE time!='#{now}'") #Select all entry in DB not updated this time
+	then
+		rsCleanedFile.each do | cleanedFile |
+			deletedArray.push(cleanedFile[0]) #Add all entry to the deleted file array
+		end
+		db.execute("DELETE FROM files WHERE time!='#{now}'") #Delete all not updated entry
 	end
 rescue SQLite3::Exception => e
 	puts "Exception occured in Main()"
@@ -87,17 +129,43 @@ ensure
 	db.close if db
 end
 
-# Get filename and clean all deleted files in dabatase
-### todo
-
-
-# Report
 putsDebug("New entry:")
 putsArrayDebug(newArray)
-
 putsDebug("Changed entry:")
-putsArrayDebug(changeArray)
+putsArrayDebug(changedArray)
+putsDebug("Deleted entry:")
+putsArrayDebug(deletedArray)
 
+# Report
+report="Summary\n"
+report+="=======\n"
+report+="Scanned file(s) :\t#{filecount}\n"
+report+="New file(s) :\t\t#{newArray.size}\n"
+report+="Modified file(s) :\t#{changedArray.size}\n"
+report+="Deleted file(s) :\t#{deletedArray.size}\n"
+if changedArray.size != 0
+then
+	report+="\n"
+	report+="Detail of modified file(s)\n"
+	report+="==========================\n"
+	report+="| Old CRC  | New CRC  | Filename ...\n"
+	report+="|----------|----------|-------------\n"
+	changedArray.each do | line |
+		report+="| #{line[1]} | #{line[2]} | #{line[0]}\n"
+	end
+end
+if deletedArray.size != 0
+then
+	report+="\n"
+	report+="Detail of deleted file(s)\n"
+	report+="=========================\n"
+	report+="| Filename ...\n"
+	report+="|-------------\n"
+	deletedArray.each do | line |
+		report+="| #{line}\n"
+	end
+end
 
+puts report
 
-exit()
+exit 0

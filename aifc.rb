@@ -55,7 +55,7 @@ def getFileCRC(filename)
 			filecrc = Zlib.crc32(filecontent,0).to_s(16).upcase
 			return filecrc
 		end
-	rescue
+	rescue Exception => e
 		puts "Exception occured in checkFileCRC()"
 		puts e
 		return nil
@@ -86,6 +86,14 @@ begin
 	putsDebug "SQLite version: #{db.get_first_value('SELECT SQLITE_VERSION()')}" #Debug: print SQLite version
 	db.execute("CREATE TABLE IF NOT EXISTS files(filename TEXT, crc TEXT, time INTEGER)") #Create table if not already exist
 	db.execute("DELETE FROM files") if $options[:reset] #Truncate table if --reset option is specified
+	putsDebug("Row count in databse : #{db.get_first_value("SELECT count(*) FROM files")}")
+
+	# Dump database in memory
+	crcTable = Hash.new
+	db.execute("SELECT filename, crc, time FROM files").each do | rows |
+		crcTable[rows[0]]=[rows[1],rows[2]]
+	end
+	putsDebug("crcTable.size = #{crcTable.size}")
 
 	ARGV.each do | path |
 		Find.find(path) do | filename | #Do a find from a path
@@ -94,7 +102,8 @@ begin
 				filecount+=1
 				newFileCRC = getFileCRC(filename) #Get the local CRC
 				putsDebug("Regular local file found. Filename : #{filename} | CRC #{newFileCRC}") #Debug: print local file information
-				oldFileCRC = getDatabaseFileCRC(db, filename)
+#				oldFileCRC = getDatabaseFileCRC(db, filename)
+				oldFileCRC = crcTable[filename]
 				if oldFileCRC #Check if a CRC has been returned from DB
 				then #yes, it means file is already present in database
 					if newFileCRC == oldFileCRC
@@ -109,11 +118,32 @@ begin
 				else #no, it's a new file
 					putsDebug("New file. Adding file to newArray and adding CRC and scanTime to database")
 					newArray.push([filename,newFileCRC])
-					db.execute("INSERT INTO files(filename, crc, time) VALUES ('#{filename}','#{newFileCRC}',#{now})") #Create entry
 				end
 			end
 		end
 	end
+	
+	
+	
+	
+	# Update DB per bloc of #{insertPerIteration} entry
+	insertPerIteration = 500
+	if newArray.size != 0
+		insertIteration = (newArray.size / insertPerIteration).to_i
+		putsDebug("insertIteration = #{insertIteration}")
+		(0..insertIteration).each do | i |
+			dbInsert = "INSERT INTO files(filename, crc, time) VALUES "
+			lineStart = i*insertPerIteration
+			lineStop = [(i+1)*insertPerIteration-1, newArray.size-1].min
+			putsDebug("lineStart = #{lineStart}")
+			putsDebug("lineStop = #{lineStop}")
+			(lineStart..lineStop).each do | j |
+				dbInsert += "('#{newArray[j][0]}','#{newArray[j][1]}',#{now}),"
+			end
+			db.execute dbInsert.chop
+		end
+	end
+
 	# DB Cleaning
 	if rsCleanedFile = db.execute("SELECT filename FROM files WHERE time!='#{now}'") #Select all entry in DB not updated this time
 	then
@@ -130,7 +160,7 @@ ensure
 end
 
 putsDebug("New entry:")
-putsArrayDebug(newArray)
+#putsArrayDebug(newArray)
 putsDebug("Changed entry:")
 putsArrayDebug(changedArray)
 putsDebug("Deleted entry:")

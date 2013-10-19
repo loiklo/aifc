@@ -126,7 +126,7 @@ begin
 	
 	
 	
-	# Update DB per bloc of #{insertPerIteration} entry
+	# Insert in DB per bloc of #{insertPerIteration} entry
 	insertPerIteration = 500
 	if newArray.size != 0
 		insertIteration = (newArray.size / insertPerIteration).to_i
@@ -140,7 +140,7 @@ begin
 			(lineStart..lineStop).each do | j |
 				dbInsert += "('#{newArray[j][0]}','#{newArray[j][1]}',#{now}),"
 			end
-			db.execute dbInsert.chop
+			db.execute dbInsert.chop #chop: remove the last ","
 		end
 	end
 

@@ -21,10 +21,6 @@ optparse = OptionParser.new do|opts|
 	opts.on( '-r', '--reset', 'Reset database before scan' ) do
 		$options[:reset] = true
 	end
-	$options[:verbose] = false
-	opts.on( '-v', '--verbose', 'Verbose report' ) do
-		$options[:reset] = true
-	end
 	$options[:database] = "aifc.db"
 	opts.on( '-b', '--database FILE', 'Use specified database' ) do |file|
 		$options[:database] = file
@@ -103,15 +99,12 @@ begin
 						db.execute("UPDATE files SET crc='#{newFileCRC}' WHERE filename='#{filename}'") #Update entry CRC
 					end
 				else #no, it's a new file
-					putsDebug("New file. Adding file to newArray and adding CRC and scanTime to database")
+					putsDebug("New file. Adding file to newArray.")
 					newArray.push([filename,newFileCRC])
 				end
 			end
 		end
 	end
-	
-	
-	
 	
 	# Insert in DB per bloc of #{insertPerIteration} entry
 	insertPerIteration = 500
@@ -131,6 +124,7 @@ begin
 		end
 	end
 
+	# Update scan time for all present files
 	if filepresentArray != 0
 	then
 		r="UPDATE files SET time='#{now}' where filename IN (\"#{filepresentArray.join('","')}\")"
@@ -141,7 +135,7 @@ begin
 	if rsCleanedFile = db.execute("SELECT filename FROM files WHERE time!='#{now}'") #Select all entry in DB not updated this time
 	then
 		rsCleanedFile.each do | cleanedFile |
-			deletedArray.push(cleanedFile[0]) #Add all entry to the deleted file array
+			deletedArray.push(cleanedFile[0]) #Add all entry to the deleted file array for report
 		end
 		db.execute("DELETE FROM files WHERE time!='#{now}'") #Delete all not updated entry
 	end

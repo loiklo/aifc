@@ -63,19 +63,8 @@ def getFileCRC(filename)
 	end
 end
 
-# Return CRC stored in database of a file
-def getDatabaseFileCRC(db, filename)
-	if rs = db.get_first_row("SELECT crc FROM files WHERE filename='#{filename}'")
-	then
-		putsDebug "getDatabaseFileCRC : Entry #{filename} present in database. CRC is #{rs[0]}"
-		return rs[0] #crc
-	else
-		putsDebug "getDatabaseFileCRC : Entry #{filename} not present in database"
-		return nil
-	end
-end
-
 #Main()
+filepresentArray = Array.new #Initialize Array of file present
 newArray = Array.new #Initialize Array of new entry
 changedArray = Array.new #Initialize Array of changed entry
 deletedArray = Array.new #Initialize Array of deleted entry
@@ -86,12 +75,12 @@ begin
 	putsDebug "SQLite version: #{db.get_first_value('SELECT SQLITE_VERSION()')}" #Debug: print SQLite version
 	db.execute("CREATE TABLE IF NOT EXISTS files(filename TEXT, crc TEXT, time INTEGER)") #Create table if not already exist
 	db.execute("DELETE FROM files") if $options[:reset] #Truncate table if --reset option is specified
-	putsDebug("Row count in databse : #{db.get_first_value("SELECT count(*) FROM files")}")
+	putsDebug("Row count in database : #{db.get_first_value("SELECT count(*) FROM files")}")
 
 	# Dump database in memory
 	crcTable = Hash.new
-	db.execute("SELECT filename, crc, time FROM files").each do | rows |
-		crcTable[rows[0]]=[rows[1],rows[2]]
+	db.execute("SELECT filename, crc FROM files").each do | rows |
+		crcTable[rows[0]]=rows[1]
 	end
 	putsDebug("crcTable.size = #{crcTable.size}")
 
@@ -99,21 +88,19 @@ begin
 		Find.find(path) do | filename | #Do a find from a path
 			if File::file?(filename) #If file found is a regular file
 			then
-				filecount+=1
+				filepresentArray.push(filename)
 				newFileCRC = getFileCRC(filename) #Get the local CRC
 				putsDebug("Regular local file found. Filename : #{filename} | CRC #{newFileCRC}") #Debug: print local file information
-#				oldFileCRC = getDatabaseFileCRC(db, filename)
 				oldFileCRC = crcTable[filename]
-				if oldFileCRC #Check if a CRC has been returned from DB
+				if oldFileCRC #Check if an old CRC is present
 				then #yes, it means file is already present in database
 					if newFileCRC == oldFileCRC
 					then #No change since last scan
-						putsDebug("No change since last time. Updating scanTime in database")
-						db.execute("UPDATE files SET time=#{now} WHERE filename='#{filename}'") #Update entry scanTime
+						putsDebug("No change since last time.")
 					else #File has changed since last time
-						putsDebug("Change since last time. Adding file to changedArray and updating CRC and scanTime in database")
+						putsDebug("Change occured since last scan. Adding file to changedArray and updating CRC and scanTime in database")
 						changedArray.push([filename,oldFileCRC,newFileCRC]) #Add file to file change
-						db.execute("UPDATE files SET crc='#{newFileCRC}', time=#{now} WHERE filename='#{filename}'") #Update entry CRC and scanTime
+						db.execute("UPDATE files SET crc='#{newFileCRC}' WHERE filename='#{filename}'") #Update entry CRC
 					end
 				else #no, it's a new file
 					putsDebug("New file. Adding file to newArray and adding CRC and scanTime to database")
@@ -144,6 +131,12 @@ begin
 		end
 	end
 
+	if filepresentArray != 0
+	then
+		r="UPDATE files SET time='#{now}' where filename IN (\"#{filepresentArray.join('","')}\")"
+		db.execute r
+	end
+
 	# DB Cleaning
 	if rsCleanedFile = db.execute("SELECT filename FROM files WHERE time!='#{now}'") #Select all entry in DB not updated this time
 	then
@@ -160,7 +153,7 @@ ensure
 end
 
 putsDebug("New entry:")
-#putsArrayDebug(newArray)
+putsArrayDebug(newArray)
 putsDebug("Changed entry:")
 putsArrayDebug(changedArray)
 putsDebug("Deleted entry:")
@@ -169,7 +162,7 @@ putsArrayDebug(deletedArray)
 # Report
 report="Summary\n"
 report+="=======\n"
-report+="Scanned file(s) :\t#{filecount}\n"
+report+="Scanned file(s) :\t#{filepresentArray.size()}\n"
 report+="New file(s) :\t\t#{newArray.size}\n"
 report+="Modified file(s) :\t#{changedArray.size}\n"
 report+="Deleted file(s) :\t#{deletedArray.size}\n"
